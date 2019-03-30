@@ -1,0 +1,286 @@
+---
+title: "HW8-Solutions"
+author: "Vishwa"
+date: "March 8, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The purpose of this assignment is to perform sentiment and lie detection analysis on collection of customer reviews.
+
+## Loading Packages
+```{r cars, message=FALSE, warning=FALSE}
+EnsurePackage <- function(x) {
+  x <- as.character(x)
+  if (!require(x,character.only = T))
+    install.packages(x,repos = "https://cran.cnr.berkeley.edu/")
+  require(x,character.only = T)
+  
+}
+
+EnsurePackage("caret")# set of functions that attempt to streamline the process for creating predictive models
+EnsurePackage("e1071") #Functions for latent class analysis, short time Fourier transform, fuzzy clustering, support vector machines, shortest path computation, bagged clustering, naive Bayes classifier
+EnsurePackage("tidyverse") #Manipulating dataset
+EnsurePackage("tidytext") #Text mining for word processing and sentiment analysis using 'dplyr', 'ggplot2', and other tidy tools
+EnsurePackage("stringr")#Simple, Consistent Wrappers for Common String Operations
+EnsurePackage("wordcloud")#wordcloud generator
+EnsurePackage("SnowballC")
+EnsurePackage("FSelector")
+EnsurePackage("klaR")
+EnsurePackage("data.table")
+EnsurePackage("lars")
+```
+
+## Loading the file that contains the data
+If you look at the excel csv data you will notice that the dataset is improperly organized. The sentences of reviews have been broken into phrases with no header above them. Looking at the excel dataset we can make out that there are 21 columns. So we will use read csv and create new columns till 21. Then we will use R to combine all the columns to create a single review column.
+
+```{r textload, message=FALSE, warning=FALSE}
+custReview <- read.csv("deception_data_converted_final.csv",stringsAsFactors = F,
+                       col.names = c("lie","sentiment","review","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21"))
+
+colnames(custReview) <- c("lie","sentiment","review","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21")
+
+#combining columns review till 21
+custReview <- custReview %>% 
+  unite(reviews,c("review","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21"))
+```
+
+## Preprocessing
+For preprocessing we will first combine the review columns and then convert the dataset into a document matrix, from which we can then apply machine learning models.First review cell needs to be cleaned.
+```{r pre, message=FALSE, warning=FALSE}
+#Remove rows 83 and 84
+custReview <- custReview[-c(83,84),]
+
+#Remove quotes
+custReview$reviews <- gsub(x = custReview$reviews, pattern = "\'",replacement = "")
+
+#Remove underscore
+custReview$reviews <- gsub(x = custReview$reviews, pattern = "_",replacement = "")
+```
+
+## Tokenization
+Tokenization is the process of breaking up a text into individual words that form the part of the text. Dplyr functions such as select and unest_tokens was used to get the results
+```{r token, results="hide", message=FALSE}
+
+custReview <- rownames_to_column(custReview, "review")
+
+custReview_words <- custReview %>% dplyr::select(review, sentiment, lie, reviews) %>%
+  unnest_tokens(word, reviews, to_lower = TRUE)
+
+```
+
+##Stemming and lemmatization (Optional)
+Stemming is the process of removal of end or beginning of the words to increase the recall by matching words against their shorter form.
+In our assignment we have used the snowball stemmer. After words were stemmed we noticed that the algorithm removed some words entirely and we were left with NA values. Therefore we removed the rows containing NA values. For this assignment I wont be going ahead with stemming and lemmatization.
+
+```{r stemming, message=FALSE}
+# custReview_words$word <- wordStem(custReview_words$word)
+# custReview_words <- custReview_words[!is.na(custReview_words$word),]
+```
+
+
+##Visualization
+This visualization displays the common words in our dataset
+```{r viz1, message=FALSE, warning=FALSE}
+#frequency and word cloud
+custReview_words %>% 
+  count(word) %>% 
+  with(wordcloud(word, n, max.words = 200))
+
+```
+</br> You can see that the visualization is riddled with small words such as prepositions. These are also called stop words and contain little information value, so we will remove these stop words and special characters by importing stop words dataset and using anti_join function
+
+## Stopword removal and visualization
+```{r stop, message=FALSE, warning=FALSE}
+data(stop_words)
+custReview_words <- custReview_words %>% anti_join(stop_words)
+
+
+```
+
+</br> visualizing again
+```{r viz2, message=FALSE, warning=FALSE}
+#frequency and word cloud
+custReview_words %>% 
+  count(word) %>% 
+  with(wordcloud(word, n, max.words = 200))
+
+```
+<br> The word cloud looks much better
+
+## Document Term Matrix
+We then convert the dataframe into a document term matrix. Document term matrix has words as columns and review no as rows. Each value represents a tf-idf value.
+```{r tm, results="hide", message=FALSE}
+
+#Construct Document term matrix; tfdif is calculated by function bind_tf_idf
+custReview_words_dtm <- custReview_words %>% 
+  count(review,sentiment,lie, word) %>% 
+  bind_tf_idf(word, review, n) %>% 
+  dplyr::select(review, sentiment,lie, word, tf_idf) %>% 
+  spread(key = word, value = tf_idf) %>% replace(is.na(.),0)
+
+custReview_words_dtm <- rownames_to_column(custReview_words_dtm, "review_no")
+#convert char to factor
+custReview_words_dtm <- custReview_words_dtm %>% mutate_at(.vars = c("review_no","sentiment","lie"),function(x) as.factor(x))
+
+#Partition data 80% training
+set.seed(8)
+sample <- createDataPartition(custReview_words_dtm$sentiment,p = 0.8,times = 1,list=F)
+train <-custReview_words_dtm[sample,]
+test <- custReview_words_dtm[-sample,]
+
+```
+</br>
+Because of low number of reviews for this assignment I have a hypothesis that we wont be able to get a very good accuracy because the algorithms have very little instances to train from.I also think that sentiment analysis will yeild better accuracy than lie detection because it is difficult for humans to also detect lies and lie detection requires many other meta data besides the reviews eg:user location, user reputation etc. Lets see how training Naive Bayes and SVM goes.
+## Performing Naivebayes on sentiment
+```{r nb, message=FALSE, warning=FALSE}
+#preprocessing data, using pca to capture 98% of variability in dataset
+
+trn_full_proc <- preProcess(train,method = c("zv"))
+trn_f <- predict(trn_full_proc,train)
+
+test_f <- predict(trn_full_proc,test)
+
+#3 fold cross validation
+
+fitControl <- trainControl(method='cv',number=3)
+
+
+start_time <- Sys.time()
+nb_senti <- train(sentiment~. -review_no - lie,data = trn_f, trControl = fitControl,method = "nb")
+end_time <- Sys.time()
+nbtime <- end_time - start_time
+nbtime
+
+
+#tuning through laplace
+trn_f <- mutate_all(trn_f, function(x) as.factor(x))
+start_time <- Sys.time()
+nb_senti_t <- train(sentiment~. -review_no - lie,data = trn_f, trControl = fitControl,method = "nb",tuneGrid = data.frame(fL=c(1),usekernel=c(TRUE), adjust=c(1)))
+end_time <- Sys.time()
+nbtime2 <- end_time - start_time
+nbtime2
+
+
+#accuracy did improve so we will use tuned parameter for final model
+
+#prediction
+predict_nb <- predict(nb_senti_t,newdata = test_f)
+
+metrics <- confusionMatrix(predict_nb, test_f$sentiment)
+
+
+nbSentiAccuracy <-  metrics$overall[1]
+nbprecision <- metrics$byClass[5]
+nbrecall <- metrics$byClass[6]
+
+
+mean(nb_senti_t$finalModel$tables$additional)
+
+df <- data.frame(matrix(unlist(nb_senti_t$finalModel$tables[1]), nrow=length(nb_senti_t$finalModel$tables[1]), byrow=T))
+
+```
+
+## Performing SVM on sentiment
+```{r svm, message=FALSE, warning=FALSE}
+
+start_time <- Sys.time()
+svm_senti <- train(sentiment~. -review_no - lie,data = trn_f, trControl = fitControl,method = "svmRadial",tuneLength = 10)
+end_time <- Sys.time()
+svmtime <- end_time - start_time
+svmtime
+svm_senti
+
+svm_senti$coefnames
+
+# Creating A tuned train model out of results obtained from previous model
+start_time <- Sys.time()
+svm_senti_f <- train(sentiment~. -review_no - lie,data = trn_f, trControl = fitControl,method = "svmRadial", tuneGrid = data.frame(C=c(32),sigma=0.02))
+end_time <- Sys.time()
+svmtime <- end_time - start_time
+svmtime
+svm_senti_f
+
+#final prediction and confusion matrix
+#prediction
+predict_svm <- predict(svm_senti_f,newdata = test_f)
+
+metrics_svm <- confusionMatrix(predict_svm, test_f$sentiment)
+metrics_svm
+
+
+svmSentiAccuracy <-  metrics_svm$overall[1]
+svmprecision <- metrics_svm$byClass[5]
+svmrecall <- metrics_svm$byClass[6]
+
+
+```
+
+## Performing NB on lie detection
+```{r nblie, , message=FALSE, warning=FALSE}
+
+start_time <- Sys.time()
+nb_lie_t <- train(lie~. -review_no - sentiment,data = trn_f, trControl = fitControl,method = "nb",tuneGrid = data.frame(fL=c(1),usekernel=c(TRUE), adjust=c(1)))
+end_time <- Sys.time()
+nbtimelie <- end_time - start_time
+nbtimelie
+nb_lie_t
+
+#prediction
+predict_nb_lie <- predict(nb_lie_t,newdata = test_f)
+
+metrics_lie <- confusionMatrix(predict_nb_lie, test_f$lie)
+
+nbLieAccuracy <-  metrics_lie$overall[1]
+nbLieprecision <- metrics_lie$byClass[5]
+nbLierecall <- metrics_lie$byClass[6]
+metrics_lie
+
+```
+
+## Performing SVM on lie detection
+```{r svmlies, message=FALSE, warning=FALSE}
+
+start_time <- Sys.time()
+svm_lie_f <- train(lie~.-review,data = trn_f, trControl = fitControl,method = "svmRadial", tuneGrid = data.frame(C=c(32),sigma=0.02))
+end_time <- Sys.time()
+svmtimelie <- end_time - start_time
+svmtimelie
+svm_lie_f
+svm_lie_f$coefnames
+
+predict_svm_lie <- predict(svm_lie_f,newdata = test_f)
+
+metrics_svm_lie <- confusionMatrix(predict_svm_lie, test_f$lie)
+metrics_svm_lie
+svmLieAccuracy <- metrics_svm_lie$overall[1]
+svmLieprecision <- metrics_svm_lie$byClass[5]
+svmLierecall <- metrics_svm_lie$byClass[6]
+
+
+
+
+```
+
+```{r frame,, message=FALSE, warning=FALSE}
+ab <- data.frame("Algorithm" = c("Naive Bayes","SVM"), "Parameter Setting" = c("fL=1, Kernel=TRUE,adjust(1)","C=32,sigma=0.02"),"Accuracy Sentiment" = c(nbSentiAccuracy
+,svmSentiAccuracy),
+                 "Accuracy Lie" = c(nbLieAccuracy,svmLieAccuracy),"Precision Cat 1" = c(nbprecision,svmprecision
+),
+                 "Recall Cat 1" = c(nbrecall,svmrecall
+),"Precision Cat 2" = c(nbLieprecision
+,svmLieprecision
+),"Recall Cat 2" = c(nbLierecall,svmLierecall))
+
+{knitr::kable(ab)}
+
+```
+
+## Conclusion
+</br> As predicted sentiment analysis gave us better accuracy than lie detection. This is because detecting lie requires many more meta data such as location, user reputation, fact checks(whether restaurant servers the dish the user is complaining about) etc. I was surprised to see we achieved a good accuracy on Naive Bayes and SVM for sentiment analysis.
+Reference:https://www.tidytextmining.com/tidytext.html 
